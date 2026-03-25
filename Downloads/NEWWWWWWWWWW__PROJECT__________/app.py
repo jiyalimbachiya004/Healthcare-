@@ -73,76 +73,93 @@ def is_valid_medical_image(image: Image.Image, preds: np.ndarray, model_name: st
     return True
 
 
-def get_case_insights(model_name: str, predicted_label: str) -> dict:
+def get_case_insights(
+    model_name: str,
+    predicted_label: str,
+    top_conf: float,
+    top2_margin: float,
+) -> dict:
     label = predicted_label.lower()
 
     # Informational guidance only. This is not a diagnosis.
+    # Be conservative when confidence is low or classes are close.
+    is_uncertain = top_conf < 0.75 or top2_margin < 0.12
+
     if model_name == "Brain Tumor MRI (Training/Testing)":
         if "notumor" in label:
             return {
-                "phase": "No tumor pattern detected by model",
-                "recovery_time": "Not applicable",
+                "phase": "AI prediction: no-tumor pattern" + (" (uncertain)" if is_uncertain else ""),
+                "recovery_time": "Not applicable (needs clinical correlation)",
                 "immediate_actions": (
-                    "Keep regular follow-up if symptoms persist. "
-                    "Consult a neurologist if you have severe headache, seizures, or vision changes."
+                    "AI can miss tumors (false negative). Do not treat this as a confirmed normal result. "
+                    "If you have symptoms (headache, seizures, weakness, vomiting, vision changes) or a prior report "
+                    "suggesting tumor, seek urgent specialist review and confirm with a radiologist/neurologist."
                 ),
             }
         if "glioma" in label:
             return {
-                "phase": "Possible intermediate to advanced risk pattern",
-                "recovery_time": "Varies widely (months to years) depending on grade and treatment response",
+                "phase": "Possible tumor pattern (glioma)" + (" (uncertain)" if is_uncertain else ""),
+                "recovery_time": "Varies widely (weeks to years) depending on grade and treatment response",
                 "immediate_actions": (
-                    "Urgent neuro-oncology consultation, contrast MRI review, and biopsy/pathology planning."
+                    "Urgent neuro/oncology consultation, contrast MRI review, and confirmatory diagnosis "
+                    "(radiology review ± biopsy as advised)."
                 ),
             }
         if "meningioma" in label:
             return {
-                "phase": "Often early/intermediate risk pattern (case dependent)",
-                "recovery_time": "Commonly weeks to months after treatment/surgery",
+                "phase": "Possible tumor pattern (meningioma)" + (" (uncertain)" if is_uncertain else ""),
+                "recovery_time": "Often weeks to months after treatment; varies by size/location",
                 "immediate_actions": (
-                    "Consult neurosurgery/neurology, review MRI with specialist, and assess need for observation vs surgery."
+                    "Consult neurology/neurosurgery, confirm with radiology review, and assess observation vs surgery "
+                    "based on symptoms and imaging."
                 ),
             }
         if "pituitary" in label:
             return {
-                "phase": "Possible early/intermediate endocrine-neuro pattern",
-                "recovery_time": "Weeks to months depending on hormonal status and treatment",
+                "phase": "Possible tumor pattern (pituitary)" + (" (uncertain)" if is_uncertain else ""),
+                "recovery_time": "Weeks to months depending on hormones, vision impact, and treatment",
                 "immediate_actions": (
-                    "Endocrinology + neurosurgery review, hormone panel testing, and vision field evaluation."
+                    "Endocrinology + neurosurgery review, hormone panel testing, and vision field evaluation. "
+                    "Confirm diagnosis with specialist."
                 ),
             }
 
     if model_name == "Data Folder (train/valid/test)":
         if "normal" in label:
             return {
-                "phase": "No obvious malignant pattern detected by model",
-                "recovery_time": "Not applicable",
+                "phase": "AI prediction: no-obvious abnormal pattern" + (" (uncertain)" if is_uncertain else ""),
+                "recovery_time": "Not applicable (needs clinical correlation)",
                 "immediate_actions": (
-                    "Maintain routine respiratory care. Seek physician review if persistent cough, chest pain, or breathlessness."
+                    "AI can miss disease (false negative). Do not treat this as a confirmed normal result. "
+                    "Confirm with a radiologist/doctor, especially if symptoms exist (persistent cough, chest pain, "
+                    "breathlessness, blood in sputum)."
                 ),
             }
         if "adenocarcinoma" in label:
             return {
-                "phase": "Possible intermediate/advanced risk pattern",
-                "recovery_time": "Typically months to years; depends on stage, mutation status, and therapy",
+                "phase": "Possible abnormal/tumor pattern (adenocarcinoma)" + (" (uncertain)" if is_uncertain else ""),
+                "recovery_time": "Typically months to years; depends on stage and therapy",
                 "immediate_actions": (
-                    "Oncology consultation, CT/PET staging, biopsy confirmation, and molecular marker testing."
+                    "Urgent doctor/oncology consultation, confirmatory diagnosis (radiology + biopsy if advised), "
+                    "and staging workup (CT/PET) if confirmed."
                 ),
             }
         if "large.cell.carcinoma" in label:
             return {
-                "phase": "Possible advanced/aggressive risk pattern",
-                "recovery_time": "Variable; often prolonged treatment course",
+                "phase": "Possible abnormal/tumor pattern (large cell)" + (" (uncertain)" if is_uncertain else ""),
+                "recovery_time": "Variable; often prolonged treatment course if confirmed",
                 "immediate_actions": (
-                    "Fast-track oncology referral, full staging workup, and treatment planning (chemo/immunotherapy/radiation)."
+                    "Fast-track doctor/oncology referral and confirmatory diagnosis. If confirmed, staging and "
+                    "treatment planning (chemo/immunotherapy/radiation) may be needed."
                 ),
             }
         if "squamous.cell.carcinoma" in label:
             return {
-                "phase": "Possible intermediate/advanced risk pattern",
-                "recovery_time": "Variable; months to years based on stage and response",
+                "phase": "Possible abnormal/tumor pattern (squamous)" + (" (uncertain)" if is_uncertain else ""),
+                "recovery_time": "Variable; months to years based on stage and response if confirmed",
                 "immediate_actions": (
-                    "Urgent oncology evaluation, imaging + pathology confirmation, and smoking-risk management."
+                    "Urgent doctor/oncology evaluation and confirmatory diagnosis (imaging + pathology). "
+                    "Address risk factors (e.g., smoking) and follow specialist guidance."
                 ),
             }
 
@@ -423,6 +440,9 @@ def render_predict_page(model_name: str) -> None:
         input_tensor = preprocess_image(image)
         preds = model.predict(input_tensor, verbose=0)[0]
         top_idx = int(np.argmax(preds))
+        top_conf = float(np.max(preds))
+        top2 = float(np.sort(preds)[-2]) if len(preds) >= 2 else 0.0
+        top2_margin = top_conf - top2
 
         if not is_valid_medical_image(image, preds, model_name):
             st.error("Image is not valid. Please upload a valid CT scan or brain tumor MRI image.")
@@ -431,12 +451,25 @@ def render_predict_page(model_name: str) -> None:
             return
 
         st.subheader("Prediction")
-        st.success(f"{class_names[top_idx]} ({preds[top_idx] * 100:.2f}%)")
+        predicted_label = class_names[top_idx]
+        st.success(f"{predicted_label} ({preds[top_idx] * 100:.2f}%)")
+
+        pl = predicted_label.lower()
+        if model_name == "Brain Tumor MRI (Training/Testing)" and "notumor" in pl:
+            st.warning(
+                "Important: `notumor` is only the AI model’s prediction. It can be wrong (false negatives). "
+                "Please confirm with a radiologist/neurologist—especially if symptoms or prior reports suggest tumor."
+            )
+        if model_name == "Data Folder (train/valid/test)" and "normal" in pl:
+            st.warning(
+                "Important: `normal` is only the AI model’s prediction. It can be wrong (false negatives). "
+                "Please confirm with a radiologist/doctor—especially if symptoms are present."
+            )
 
         st.subheader("Class probabilities")
         render_probability_panel(class_names, preds)
 
-        insights = get_case_insights(model_name, class_names[top_idx])
+        insights = get_case_insights(model_name, predicted_label, top_conf, top2_margin)
         st.markdown('<div class="insight-card">', unsafe_allow_html=True)
         st.markdown('<div class="insight-title">Clinical Insight (AI-assisted)</div>', unsafe_allow_html=True)
         st.write(f"**Possible phase:** {insights['phase']}")
